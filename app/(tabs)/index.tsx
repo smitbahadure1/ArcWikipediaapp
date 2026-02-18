@@ -50,47 +50,70 @@ export default function HomeScreen() {
   const fetchData = async () => {
     try {
       setErrorMsg(null);
-      let datePath = getTodayDatePath();
-      let url = `https://en.wikipedia.org/api/rest_v1/feed/featured/${datePath}`;
+      const datePath = getTodayDatePath();
+      const randomPath = getRandomPastDatePath();
 
-      // ... headers logic ...
-      let headers: any = {
-        'Accept': 'application/json'
+      const baseUrl = `https://en.wikipedia.org/api/rest_v1/feed/featured/`;
+      const mainUrl = `${baseUrl}${datePath}`;
+      const randomUrl = `${baseUrl}${randomPath}`;
+      const randomArticleUrl = 'https://en.wikipedia.org/api/rest_v1/page/random/summary';
+
+      const headers: any = {
+        'Accept': 'application/json',
+        ...(Platform.OS === 'web'
+          ? { 'Api-User-Agent': 'WikipediaAppClone/1.0 (https://example.org/my-cool-app; my@email.com)' }
+          : { 'User-Agent': 'WikipediaAppClone/1.0 (https://example.org/my-cool-app; my@email.com)' }
+        )
       };
 
-      if (Platform.OS === 'web') {
-        headers['Api-User-Agent'] = 'WikipediaAppClone/1.0 (https://example.org/my-cool-app; my@email.com)';
-      } else {
-        headers['User-Agent'] = 'WikipediaAppClone/1.0 (https://example.org/my-cool-app; my@email.com)';
-      }
-
-      let response = null;
-      try {
-        response = await fetch(url, { headers });
-        if (!response.ok) throw new Error('API request failed');
-      } catch (e) {
-        console.log("Primary fetch failed", e);
-        if (Platform.OS === 'web') {
-          try {
-            console.log("Trying CORS proxy...");
+      const fetchWithPossibleProxy = async (url: string) => {
+        try {
+          const resp = await fetch(url, { headers });
+          if (resp.ok) return resp.json();
+          throw new Error('Direct fetch failed');
+        } catch (e) {
+          if (Platform.OS === 'web') {
             const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-            response = await fetch(proxyUrl);
-          } catch (proxyError) {
-            console.log("Proxy fetch failed", proxyError);
+            const proxyResp = await fetch(proxyUrl);
+            if (proxyResp.ok) return proxyResp.json();
           }
+          throw e;
         }
-      }
+      };
 
-      // Randomly select variants to simulate "new news"
-      const randomNews = MOCK_NEWS_VARIANTS[Math.floor(Math.random() * MOCK_NEWS_VARIANTS.length)];
-      const randomTfa = MOCK_TFA_VARIANTS[Math.floor(Math.random() * MOCK_TFA_VARIANTS.length)];
+      // Perform all fetches in parallel for speed
+      const [mainFeed, randomFeed, randomArticle] = await Promise.allSettled([
+        fetchWithPossibleProxy(mainUrl),
+        fetchWithPossibleProxy(randomUrl),
+        fetchWithPossibleProxy(randomArticleUrl)
+      ]);
 
-      if (!response || !response.ok) {
-        console.log("Using fallback data due to fetch error.");
+      let finalData: any = null;
 
-        // FALLBACK DATA
-        const fallbackData = {
-          tfa: randomTfa,
+      if (mainFeed.status === 'fulfilled') {
+        finalData = mainFeed.value;
+
+        // Inject variety from random feed if available
+        if (randomFeed.status === 'fulfilled') {
+          if (randomFeed.value.tfa) finalData.tfa = randomFeed.value.tfa;
+          if (randomFeed.value.image) finalData.image = randomFeed.value.image;
+        }
+
+        // Shuffle mult-item lists
+        const shuffle = (arr: any[]) => arr ? [...arr].sort(() => 0.5 - Math.random()) : arr;
+        if (finalData.news) finalData.news = shuffle(finalData.news);
+        if (finalData.onthisday) finalData.onthisday = shuffle(finalData.onthisday);
+        if (finalData.mostread?.articles) finalData.mostread.articles = shuffle(finalData.mostread.articles);
+
+        setData(finalData);
+      } else {
+        // FALLBACK if main feed fails
+        console.log("Main feed failed, using fallback mock data.");
+        const randomNewsArr = MOCK_NEWS_VARIANTS[Math.floor(Math.random() * MOCK_NEWS_VARIANTS.length)];
+        const randomTfaArr = MOCK_TFA_VARIANTS[Math.floor(Math.random() * MOCK_TFA_VARIANTS.length)];
+
+        setData({
+          tfa: randomTfaArr,
           mostread: {
             articles: [
               { title: "React_Native", displaytitle: "React Native", views: "12,403", thumbnail: { source: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/React-icon.svg/200px-React-icon.svg.png" } },
@@ -103,65 +126,22 @@ export default function HomeScreen() {
             thumbnail: { source: "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Altja_j%C3%B5gi_Lahemaal.jpg/640px-Altja_j%C3%B5gi_Lahemaal.jpg" },
             description: { text: "A beautiful river landscape in Lahemaa National Park, Estonia." }
           },
-          news: randomNews,
+          news: randomNewsArr,
           onthisday: [
             { year: 2023, text: "Wikipedia continues to be a free encyclopedia that anyone can edit.", pages: [{ title: "Wikipedia", displaytitle: "Wikipedia", thumbnail: { source: "https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/Wikipedia-logo.png/200px-Wikipedia-logo.png" } }] }
           ]
-        };
-        setData(fallbackData);
+        });
+      }
+
+      if (randomArticle.status === 'fulfilled') {
+        setRandom(randomArticle.value);
+      } else {
         setRandom({
           title: "Soccer_ball",
           displaytitle: "Random Fallback",
           extract: "This is a random article placeholder shown when the API is unreachable.",
           thumbnail: { source: "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Soccer_ball.svg/200px-Soccer_ball.svg.png" }
         });
-      } else {
-        const json = await response.json();
-
-        // 2. Fetch Random Past Data for Variety (TFA, POTD)
-        // We fetch a random past date to get a different Featured Article and Picture of the Day on refreshing,
-        // while keeping News and On This Day current.
-        try {
-          const randomPath = getRandomPastDatePath();
-          const randomUrl = `https://en.wikipedia.org/api/rest_v1/feed/featured/${randomPath}`;
-
-          let randResp = await fetch(randomUrl, { headers });
-          if (!randResp.ok && Platform.OS === 'web') {
-            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(randomUrl)}`;
-            randResp = await fetch(proxyUrl);
-          }
-
-          if (randResp.ok) {
-            const randJson = await randResp.json();
-            if (randJson.tfa) json.tfa = randJson.tfa;
-            if (randJson.image) json.image = randJson.image;
-          }
-        } catch (e) {
-          console.log("Failed to fetch random variety", e);
-        }
-
-        // Shuffle mult-item lists to make 'refresh' feel dynamic while using real data
-        if (json.news && Array.isArray(json.news)) {
-          json.news = json.news.sort(() => 0.5 - Math.random());
-        }
-        if (json.onthisday && Array.isArray(json.onthisday)) {
-          json.onthisday = json.onthisday.sort(() => 0.5 - Math.random());
-        }
-        if (json.mostread && json.mostread.articles && Array.isArray(json.mostread.articles)) {
-          json.mostread.articles = json.mostread.articles.sort(() => 0.5 - Math.random());
-        }
-
-        setData(json);
-
-        // Random Article Fetch
-        try {
-          let randomUrl = 'https://en.wikipedia.org/api/rest_v1/page/random/summary';
-          let randomResp = await fetch(randomUrl, { headers });
-          const randomJson = await randomResp.json();
-          setRandom(randomJson);
-        } catch (e) {
-          setRandom({ displaytitle: "Loading Error", extract: "Could not fetch random article." });
-        }
       }
 
     } catch (error: any) {
@@ -172,6 +152,7 @@ export default function HomeScreen() {
       setRefreshing(false);
     }
   };
+
 
   useEffect(() => {
     fetchData(); // Initial call
