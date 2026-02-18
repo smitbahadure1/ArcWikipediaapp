@@ -5,11 +5,27 @@ import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState, useCallback } from 'react';
 import { Link, useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { MOCK_NEWS_VARIANTS, MOCK_TFA_VARIANTS } from '@/constants/mocks';
+import {
+  MOCK_NEWS_VARIANTS,
+  MOCK_TFA_VARIANTS,
+  MOCK_TOP_READ_VARIANTS,
+  MOCK_POTD_VARIANTS,
+  MOCK_ON_THIS_DAY_VARIANTS
+} from '@/constants/mocks';
 
 // Helper to get today's date in YYYY/MM/DD format
 const getTodayDatePath = () => {
   const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}/${month}/${day}`;
+};
+
+// Helper to get a random date from the past (last 30 days) for variety
+const getRandomPastDatePath = () => {
+  const date = new Date();
+  date.setDate(date.getDate() - Math.floor(Math.random() * 30) - 1);
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
@@ -65,12 +81,12 @@ export default function HomeScreen() {
         }
       }
 
+      // Randomly select variants to simulate "new news"
+      const randomNews = MOCK_NEWS_VARIANTS[Math.floor(Math.random() * MOCK_NEWS_VARIANTS.length)];
+      const randomTfa = MOCK_TFA_VARIANTS[Math.floor(Math.random() * MOCK_TFA_VARIANTS.length)];
+
       if (!response || !response.ok) {
         console.log("Using fallback data due to fetch error.");
-
-        // Randomly select variants to simulate "new news"
-        const randomNews = MOCK_NEWS_VARIANTS[Math.floor(Math.random() * MOCK_NEWS_VARIANTS.length)];
-        const randomTfa = MOCK_TFA_VARIANTS[Math.floor(Math.random() * MOCK_TFA_VARIANTS.length)];
 
         // FALLBACK DATA
         const fallbackData = {
@@ -101,6 +117,40 @@ export default function HomeScreen() {
         });
       } else {
         const json = await response.json();
+
+        // 2. Fetch Random Past Data for Variety (TFA, POTD)
+        // We fetch a random past date to get a different Featured Article and Picture of the Day on refreshing,
+        // while keeping News and On This Day current.
+        try {
+          const randomPath = getRandomPastDatePath();
+          const randomUrl = `https://en.wikipedia.org/api/rest_v1/feed/featured/${randomPath}`;
+
+          let randResp = await fetch(randomUrl, { headers });
+          if (!randResp.ok && Platform.OS === 'web') {
+            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(randomUrl)}`;
+            randResp = await fetch(proxyUrl);
+          }
+
+          if (randResp.ok) {
+            const randJson = await randResp.json();
+            if (randJson.tfa) json.tfa = randJson.tfa;
+            if (randJson.image) json.image = randJson.image;
+          }
+        } catch (e) {
+          console.log("Failed to fetch random variety", e);
+        }
+
+        // Shuffle mult-item lists to make 'refresh' feel dynamic while using real data
+        if (json.news && Array.isArray(json.news)) {
+          json.news = json.news.sort(() => 0.5 - Math.random());
+        }
+        if (json.onthisday && Array.isArray(json.onthisday)) {
+          json.onthisday = json.onthisday.sort(() => 0.5 - Math.random());
+        }
+        if (json.mostread && json.mostread.articles && Array.isArray(json.mostread.articles)) {
+          json.mostread.articles = json.mostread.articles.sort(() => 0.5 - Math.random());
+        }
+
         setData(json);
 
         // Random Article Fetch
